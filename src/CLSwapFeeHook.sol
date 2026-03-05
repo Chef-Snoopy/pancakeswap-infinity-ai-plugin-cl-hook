@@ -74,9 +74,8 @@ contract CLSwapFeeHook is CLBaseHook {
 
     // ── Constructor ──────────────────────────────────────────────────────────
 
-    constructor(ICLPoolManager _poolManager, IVault _vault) CLBaseHook(_poolManager) {
-        if (address(_poolManager) == address(0)) revert ZeroAddress();
-        if (address(_vault) == address(0)) revert ZeroAddress();
+    constructor(ICLPoolManager _poolManager) CLBaseHook(_poolManager) {
+        // CLBaseHook constructor validates that poolManager is not zero address
         admin = msg.sender;
     }
 

@@ -50,7 +50,7 @@ contract CLSwapFeeHookTest is Test, Deployers, DeployPermit2 {
     function setUp() public {
         (vault, poolManager) = createFreshManager();
         admin = address(this);
-        swapFeeHook = new CLSwapFeeHook(poolManager, vault);
+        swapFeeHook = new CLSwapFeeHook(poolManager);
 
         permit2 = IAllowanceTransfer(deployPermit2());
         cpm = new MockCLPositionManager(vault, poolManager, permit2);
@@ -104,11 +104,6 @@ contract CLSwapFeeHookTest is Test, Deployers, DeployPermit2 {
     function testConstructorSetsAdmin() public {
         assertEq(swapFeeHook.admin(), admin);
         assertEq(swapFeeHook.pendingAdmin(), address(0));
-    }
-
-    function testConstructorRevertsOnZeroVault() public {
-        vm.expectRevert(CLSwapFeeHook.ZeroAddress.selector);
-        new CLSwapFeeHook(poolManager, IVault(address(0)));
     }
 
     // ── Hook Permissions Tests ───────────────────────────────────────────────
