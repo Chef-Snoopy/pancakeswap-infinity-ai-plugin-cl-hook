@@ -34,6 +34,6 @@ contract DeployCLSwapFeeHook is Script {
         vm.stopBroadcast();
 
         console.log("CLSwapFeeHook deployed at:", address(hook));
-        console.log("Admin:", hook.admin());
+        console.log("Owner:", hook.owner());
     }
 }

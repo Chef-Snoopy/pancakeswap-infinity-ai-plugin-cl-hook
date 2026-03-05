@@ -7,9 +7,9 @@ import {IVault} from "infinity-core/src/interfaces/IVault.sol";
 import {PoolKey} from "infinity-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "infinity-core/src/types/PoolId.sol";
 import {BalanceDelta} from "infinity-core/src/types/BalanceDelta.sol";
-import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "infinity-core/src/types/BeforeSwapDelta.sol";
 import {Currency} from "infinity-core/src/types/Currency.sol";
-import {Hooks} from "infinity-core/src/libraries/Hooks.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /// @title CLSwapFeeHook
 /// @notice PancakeSwap Infinity CL hook that charges a 0.1% protocol fee on every swap.
@@ -18,9 +18,9 @@ import {Hooks} from "infinity-core/src/libraries/Hooks.sol";
 ///        - exactOutput → added to user's cost     (user pays more)
 ///      afterSwap returns the fee amount so the PoolManager deducts it from the user's
 ///      settlement. The hook simultaneously mints vault ERC-6909 claims to itself to
-///      settle its own delta. Accrued claims are withdrawn by the admin at any time
+///      settle its own delta. Accrued claims are withdrawn by the owner at any time
 ///      via withdrawFees(), which burns the claims and calls vault.take().
-contract CLSwapFeeHook is CLBaseHook {
+contract CLSwapFeeHook is CLBaseHook, Ownable2Step {
     using PoolIdLibrary for PoolKey;
 
     // ── Constants ───────────────────────────────────────────────────────────
@@ -31,36 +31,22 @@ contract CLSwapFeeHook is CLBaseHook {
 
     // ── State ────────────────────────────────────────────────────────────────
 
-    /// @notice Current admin (two-step transfer)
-    address public admin;
-    /// @notice Pending admin waiting to accept ownership
-    address public pendingAdmin;
-
-    /// @notice Accumulated vault ERC-6909 credits per currency, claimable by admin
+    /// @notice Accumulated vault ERC-6909 credits per currency, claimable by owner
     mapping(Currency currency => uint256 amount) public accruedFees;
 
     // ── Events ───────────────────────────────────────────────────────────────
 
-    event AdminTransferInitiated(address indexed newAdmin);
-    event AdminTransferred(address indexed previousAdmin, address indexed newAdmin);
     event FeeAccrued(PoolId indexed poolId, Currency indexed currency, uint256 amount);
     event FeesWithdrawn(Currency indexed currency, address indexed recipient, uint256 amount);
 
     // ── Errors ───────────────────────────────────────────────────────────────
 
-    error OnlyAdmin();
     error OnlyVault();
     error OnlyPoolManager();
     error ZeroAddress();
-    error NotPendingAdmin();
     error InsufficientAccruedFees();
 
     // ── Modifiers ────────────────────────────────────────────────────────────
-
-    modifier onlyAdmin() {
-        if (msg.sender != admin) revert OnlyAdmin();
-        _;
-    }
 
     modifier onlyVault() {
         if (msg.sender != address(vault)) revert OnlyVault();
@@ -74,10 +60,7 @@ contract CLSwapFeeHook is CLBaseHook {
 
     // ── Constructor ──────────────────────────────────────────────────────────
 
-    constructor(ICLPoolManager _poolManager) CLBaseHook(_poolManager) {
-        // CLBaseHook constructor validates that poolManager is not zero address
-        admin = msg.sender;
-    }
+    constructor(ICLPoolManager _poolManager) CLBaseHook(_poolManager) Ownable(msg.sender) {}
 
     // ── Permissions ──────────────────────────────────────────────────────────
 
@@ -178,7 +161,7 @@ contract CLSwapFeeHook is CLBaseHook {
     /// @param currency  Token to withdraw.
     /// @param recipient Destination address; must not be zero.
     /// @param amount    How much to withdraw; pass 0 to withdraw entire balance.
-    function withdrawFees(Currency currency, address recipient, uint256 amount) external onlyAdmin {
+    function withdrawFees(Currency currency, address recipient, uint256 amount) external onlyOwner {
         if (recipient == address(0)) revert ZeroAddress();
 
         uint256 available = accruedFees[currency];
@@ -194,21 +177,9 @@ contract CLSwapFeeHook is CLBaseHook {
         emit FeesWithdrawn(currency, recipient, amount);
     }
 
-    // ── Admin: Ownership ─────────────────────────────────────────────────────
-
-    /// @notice Step 1 of two-step admin transfer — nominate a new admin.
-    function initiateAdminTransfer(address newAdmin) external onlyAdmin {
-        if (newAdmin == address(0)) revert ZeroAddress();
-        pendingAdmin = newAdmin;
-        emit AdminTransferInitiated(newAdmin);
-    }
-
-    /// @notice Step 2 of two-step admin transfer — new admin accepts ownership.
-    function acceptAdminTransfer() external {
-        if (msg.sender != pendingAdmin) revert NotPendingAdmin();
-        address previous = admin;
-        admin = pendingAdmin;
-        pendingAdmin = address(0);
-        emit AdminTransferred(previous, admin);
+    /// @notice Override to disallow transferring ownership to zero address.
+    function transferOwnership(address newOwner) public virtual override(Ownable2Step) {
+        if (newOwner == address(0)) revert ZeroAddress();
+        super.transferOwnership(newOwner);
     }
 }

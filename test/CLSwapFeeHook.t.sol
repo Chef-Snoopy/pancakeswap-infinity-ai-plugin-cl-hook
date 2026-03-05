@@ -23,6 +23,8 @@ import {IAllowanceTransfer} from "permit2/src/interfaces/IAllowanceTransfer.sol"
 import {MockCLSwapRouter} from "infinity-hooks/test/pool-cl/helpers/MockCLSwapRouter.sol";
 import {MockCLPositionManager} from "infinity-hooks/test/pool-cl/helpers/MockCLPositionManager.sol";
 import {CLSwapFeeHook} from "../src/CLSwapFeeHook.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 contract CLSwapFeeHookTest is Test, Deployers, DeployPermit2 {
     using PoolIdLibrary for PoolKey;
@@ -43,13 +45,13 @@ contract CLSwapFeeHookTest is Test, Deployers, DeployPermit2 {
     PoolKey key;
     PoolId id;
 
-    address admin;
+    address owner;
     address alice = address(0x1111);
     address bob = address(0x2222);
 
     function setUp() public {
         (vault, poolManager) = createFreshManager();
-        admin = address(this);
+        owner = address(this);
         swapFeeHook = new CLSwapFeeHook(poolManager);
 
         permit2 = IAllowanceTransfer(deployPermit2());
@@ -101,9 +103,9 @@ contract CLSwapFeeHookTest is Test, Deployers, DeployPermit2 {
 
     // ── Constructor Tests ────────────────────────────────────────────────────
 
-    function testConstructorSetsAdmin() public {
-        assertEq(swapFeeHook.admin(), admin);
-        assertEq(swapFeeHook.pendingAdmin(), address(0));
+    function testConstructorSetsOwner() public view {
+        assertEq(swapFeeHook.owner(), owner);
+        assertEq(swapFeeHook.pendingOwner(), address(0));
     }
 
     // ── Hook Permissions Tests ───────────────────────────────────────────────
@@ -272,9 +274,9 @@ contract CLSwapFeeHookTest is Test, Deployers, DeployPermit2 {
         assertEq(balanceAfter - balanceBefore, accruedFee, "Bob should receive all fees");
     }
 
-    function testWithdrawFeesRevertsOnNonAdmin() public {
+    function testWithdrawFeesRevertsOnNonOwner() public {
         vm.prank(alice);
-        vm.expectRevert(CLSwapFeeHook.OnlyAdmin.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
         swapFeeHook.withdrawFees(currency1, alice, 100);
     }
 
@@ -305,61 +307,61 @@ contract CLSwapFeeHookTest is Test, Deployers, DeployPermit2 {
         swapFeeHook.withdrawFees(currency1, bob, accruedFee);
     }
 
-    // ── Admin Transfer Tests ─────────────────────────────────────────────────
+    // ── Ownership Transfer Tests (Ownable2Step) ───────────────────────────────
 
-    function testInitiateAdminTransfer() public {
-        swapFeeHook.initiateAdminTransfer(alice);
-        assertEq(swapFeeHook.pendingAdmin(), alice);
-        assertEq(swapFeeHook.admin(), admin);
+    function testTransferOwnership() public {
+        swapFeeHook.transferOwnership(alice);
+        assertEq(swapFeeHook.pendingOwner(), alice);
+        assertEq(swapFeeHook.owner(), owner);
     }
 
-    function testInitiateAdminTransferRevertsOnNonAdmin() public {
+    function testTransferOwnershipRevertsOnNonOwner() public {
         vm.prank(alice);
-        vm.expectRevert(CLSwapFeeHook.OnlyAdmin.selector);
-        swapFeeHook.initiateAdminTransfer(bob);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        swapFeeHook.transferOwnership(bob);
     }
 
-    function testInitiateAdminTransferRevertsOnZeroAddress() public {
+    function testTransferOwnershipRevertsOnZeroAddress() public {
         vm.expectRevert(CLSwapFeeHook.ZeroAddress.selector);
-        swapFeeHook.initiateAdminTransfer(address(0));
+        swapFeeHook.transferOwnership(address(0));
     }
 
-    function testInitiateAdminTransferEvent() public {
-        vm.expectEmit(true, false, false, false);
-        emit CLSwapFeeHook.AdminTransferInitiated(alice);
+    function testTransferOwnershipEvent() public {
+        vm.expectEmit(true, true, false, false);
+        emit Ownable2Step.OwnershipTransferStarted(owner, alice);
 
-        swapFeeHook.initiateAdminTransfer(alice);
+        swapFeeHook.transferOwnership(alice);
     }
 
-    function testAcceptAdminTransfer() public {
-        swapFeeHook.initiateAdminTransfer(alice);
+    function testAcceptOwnership() public {
+        swapFeeHook.transferOwnership(alice);
 
         vm.prank(alice);
-        swapFeeHook.acceptAdminTransfer();
+        swapFeeHook.acceptOwnership();
 
-        assertEq(swapFeeHook.admin(), alice);
-        assertEq(swapFeeHook.pendingAdmin(), address(0));
+        assertEq(swapFeeHook.owner(), alice);
+        assertEq(swapFeeHook.pendingOwner(), address(0));
     }
 
-    function testAcceptAdminTransferRevertsOnNonPendingAdmin() public {
-        swapFeeHook.initiateAdminTransfer(alice);
+    function testAcceptOwnershipRevertsOnNonPendingOwner() public {
+        swapFeeHook.transferOwnership(alice);
 
         vm.prank(bob);
-        vm.expectRevert(CLSwapFeeHook.NotPendingAdmin.selector);
-        swapFeeHook.acceptAdminTransfer();
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, bob));
+        swapFeeHook.acceptOwnership();
     }
 
-    function testAcceptAdminTransferEvent() public {
-        swapFeeHook.initiateAdminTransfer(alice);
+    function testAcceptOwnershipEvent() public {
+        swapFeeHook.transferOwnership(alice);
 
         vm.expectEmit(true, true, false, false);
-        emit CLSwapFeeHook.AdminTransferred(admin, alice);
+        emit Ownable.OwnershipTransferred(owner, alice);
 
         vm.prank(alice);
-        swapFeeHook.acceptAdminTransfer();
+        swapFeeHook.acceptOwnership();
     }
 
-    function testNewAdminCanWithdrawFees() public {
+    function testNewOwnerCanWithdrawFees() public {
         // Accrue fees
         swapRouter.exactInputSingle(
             ICLRouterBase.CLSwapExactInputSingleParams({
@@ -368,12 +370,10 @@ contract CLSwapFeeHookTest is Test, Deployers, DeployPermit2 {
             block.timestamp
         );
 
-        // Transfer admin
-        swapFeeHook.initiateAdminTransfer(alice);
+        swapFeeHook.transferOwnership(alice);
         vm.prank(alice);
-        swapFeeHook.acceptAdminTransfer();
+        swapFeeHook.acceptOwnership();
 
-        // New admin withdraws fees
         uint256 accruedFee = swapFeeHook.accruedFees(currency1);
 
         vm.prank(alice);
@@ -382,7 +382,7 @@ contract CLSwapFeeHookTest is Test, Deployers, DeployPermit2 {
         assertEq(swapFeeHook.accruedFees(currency1), 0);
     }
 
-    function testOldAdminCannotWithdrawAfterTransfer() public {
+    function testOldOwnerCannotWithdrawAfterTransfer() public {
         // Accrue fees
         swapRouter.exactInputSingle(
             ICLRouterBase.CLSwapExactInputSingleParams({
@@ -391,13 +391,11 @@ contract CLSwapFeeHookTest is Test, Deployers, DeployPermit2 {
             block.timestamp
         );
 
-        // Transfer admin
-        swapFeeHook.initiateAdminTransfer(alice);
+        swapFeeHook.transferOwnership(alice);
         vm.prank(alice);
-        swapFeeHook.acceptAdminTransfer();
+        swapFeeHook.acceptOwnership();
 
-        // Old admin cannot withdraw
-        vm.expectRevert(CLSwapFeeHook.OnlyAdmin.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, owner));
         swapFeeHook.withdrawFees(currency1, bob, 100);
     }
 
