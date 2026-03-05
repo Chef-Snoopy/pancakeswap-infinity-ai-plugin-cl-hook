@@ -26,13 +26,8 @@ contract CLSwapFeeHook is CLBaseHook {
     // ── Constants ───────────────────────────────────────────────────────────
 
     /// @notice 0.1% fee — 10 bps (10 / 10_000)
-    uint256 private constant FEE_BIPS        = 10;
+    uint256 private constant FEE_BIPS = 10;
     uint256 private constant FEE_DENOMINATOR = 10_000;
-
-    // ── Immutables ──────────────────────────────────────────────────────────
-
-    IVault           public immutable vault;
-    ICLPoolManager   public immutable poolManager;
 
     // ── State ────────────────────────────────────────────────────────────────
 
@@ -79,33 +74,34 @@ contract CLSwapFeeHook is CLBaseHook {
 
     // ── Constructor ──────────────────────────────────────────────────────────
 
-    constructor(ICLPoolManager _poolManager, IVault _vault) {
+    constructor(ICLPoolManager _poolManager, IVault _vault) CLBaseHook(_poolManager) {
         if (address(_poolManager) == address(0)) revert ZeroAddress();
-        if (address(_vault)       == address(0)) revert ZeroAddress();
-        poolManager = _poolManager;
-        vault       = _vault;
-        admin       = msg.sender;
+        if (address(_vault) == address(0)) revert ZeroAddress();
+        admin = msg.sender;
     }
 
     // ── Permissions ──────────────────────────────────────────────────────────
 
-    /// @notice Only afterSwap and accessLocked are enabled — minimum attack surface.
-    /// @dev    accessLocked must be true so vault.mint() can be called inside the callback.
-    function getHookPermissions() public pure override returns (Permissions memory) {
-        return Permissions({
-            beforeInitialize:     false,
-            afterInitialize:      false,
-            beforeAddLiquidity:   false,
-            afterAddLiquidity:    false,
-            beforeRemoveLiquidity:false,
-            afterRemoveLiquidity: false,
-            beforeSwap:           false,
-            afterSwap:            true,   // ← collect fee after swap
-            beforeDonate:         false,
-            afterDonate:          false,
-            noOp:                 false,
-            accessLocked:         true    // ← vault.mint() during callback
-        });
+    /// @notice Returns the hook's registration bitmap
+    function getHooksRegistrationBitmap() external pure override returns (uint16) {
+        return _hooksRegistrationBitmapFrom(
+            Permissions({
+                beforeInitialize: false,
+                afterInitialize: false,
+                beforeAddLiquidity: false,
+                afterAddLiquidity: false,
+                beforeRemoveLiquidity: false,
+                afterRemoveLiquidity: false,
+                beforeSwap: false,
+                afterSwap: true,
+                beforeDonate: false,
+                afterDonate: false,
+                beforeSwapReturnDelta: false,
+                afterSwapReturnDelta: true,
+                afterAddLiquidityReturnDelta: false,
+                afterRemoveLiquidityReturnDelta: false
+            })
+        );
     }
 
     // ── Hook Callback ────────────────────────────────────────────────────────
@@ -115,7 +111,7 @@ contract CLSwapFeeHook is CLBaseHook {
     /// @param delta   Actual balance changes from the swap (from the pool's perspective).
     /// @return        Function selector, and fee amount to deduct from unspecified token.
     function afterSwap(
-        address,                                  // sender — not used; PoolManager is trusted
+        address, // sender — not used; PoolManager is trusted
         PoolKey calldata key,
         ICLPoolManager.SwapParams calldata params,
         BalanceDelta delta,
@@ -129,20 +125,19 @@ contract CLSwapFeeHook is CLBaseHook {
         //   oneForZero + exactInput  → unspecified = currency0 (output)
         //   oneForZero + exactOutput → unspecified = currency1 (input)
         //
-        // Pattern: unspecified is currency1  iff  (zeroForOne == exactInput)
-        bool exactInput            = params.amountSpecified < 0;
+        // Pattern: unspecified is currency1  if (zeroForOne == exactInput)
+        bool exactInput = params.amountSpecified < 0;
         bool unspecifiedIsCurrency1 = (params.zeroForOne == exactInput);
 
-        Currency feeCurrency     = unspecifiedIsCurrency1 ? key.currency1 : key.currency0;
-        int128   unspecifiedDelta = unspecifiedIsCurrency1 ? delta.amount1() : delta.amount0();
+        Currency feeCurrency = unspecifiedIsCurrency1 ? key.currency1 : key.currency0;
+        int128 unspecifiedDelta = unspecifiedIsCurrency1 ? delta.amount1() : delta.amount0();
 
         // ── 2. Compute absolute unspecified amount ──────────────────────────
         //
         // exactInput  → delta is negative (pool sends tokens out) → abs
         // exactOutput → delta is positive (pool receives tokens)  → use directly
-        uint256 unspecifiedAbs = unspecifiedDelta < 0
-            ? uint256(uint128(-unspecifiedDelta))
-            : uint256(uint128(unspecifiedDelta));
+        uint256 unspecifiedAbs =
+            unspecifiedDelta < 0 ? uint256(uint128(-unspecifiedDelta)) : uint256(uint128(unspecifiedDelta));
 
         // ── 3. Calculate fee ────────────────────────────────────────────────
         uint256 fee = (unspecifiedAbs * FEE_BIPS) / FEE_DENOMINATOR;
@@ -156,7 +151,7 @@ contract CLSwapFeeHook is CLBaseHook {
         // We must settle it in the same lock context by minting vault ERC-6909
         // claims. These claims represent tokens the hook can later withdraw.
         accruedFees[feeCurrency] += fee;
-        vault.mint(address(this), feeCurrency, fee);  // settles hook's delta claim
+        vault.mint(address(this), feeCurrency, fee); // settles hook's delta claim
 
         emit FeeAccrued(key.toId(), feeCurrency, fee);
 
@@ -169,8 +164,7 @@ contract CLSwapFeeHook is CLBaseHook {
     /// @notice Executed by the vault during fee withdrawal (see withdrawFees).
     /// @dev Burns the hook's ERC-6909 claims and forwards underlying tokens to recipient.
     function lockAcquired(bytes calldata data) external override onlyVault returns (bytes memory) {
-        (Currency currency, address recipient, uint256 amount) =
-            abi.decode(data, (Currency, address, uint256));
+        (Currency currency, address recipient, uint256 amount) = abi.decode(data, (Currency, address, uint256));
 
         // Burn claim tokens held by this hook, then transfer underlying to recipient
         vault.burn(address(this), currency, amount);
@@ -185,11 +179,7 @@ contract CLSwapFeeHook is CLBaseHook {
     /// @param currency  Token to withdraw.
     /// @param recipient Destination address; must not be zero.
     /// @param amount    How much to withdraw; pass 0 to withdraw entire balance.
-    function withdrawFees(
-        Currency currency,
-        address  recipient,
-        uint256  amount
-    ) external onlyAdmin {
+    function withdrawFees(Currency currency, address recipient, uint256 amount) external onlyAdmin {
         if (recipient == address(0)) revert ZeroAddress();
 
         uint256 available = accruedFees[currency];
@@ -218,7 +208,7 @@ contract CLSwapFeeHook is CLBaseHook {
     function acceptAdminTransfer() external {
         if (msg.sender != pendingAdmin) revert NotPendingAdmin();
         address previous = admin;
-        admin       = pendingAdmin;
+        admin = pendingAdmin;
         pendingAdmin = address(0);
         emit AdminTransferred(previous, admin);
     }
