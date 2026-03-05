@@ -1,0 +1,9 @@
+[submodule "lib/infinity-hooks"]
+	path = lib/infinity-hooks
+	url = https://github.com/pancakeswap/infinity-hooks
+[submodule "lib/infinity-core"]
+	path = lib/infinity-core
+	url = https://github.com/pancakeswap/infinity-core
+[submodule "lib/forge-std"]
+	path = lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
