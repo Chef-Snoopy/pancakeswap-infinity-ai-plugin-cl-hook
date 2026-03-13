@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {CLBaseHook} from "infinity-hooks/src/pool-cl/CLBaseHook.sol";
-import {ICLPoolManager} from "infinity-core/src/pool-cl/interfaces/ICLPoolManager.sol";
-import {IVault} from "infinity-core/src/interfaces/IVault.sol";
+import {BinBaseHook} from "infinity-hooks/src/pool-bin/BinBaseHook.sol";
+import {IBinPoolManager} from "infinity-core/src/pool-bin/interfaces/IBinPoolManager.sol";
 import {PoolKey} from "infinity-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "infinity-core/src/types/PoolId.sol";
 import {BalanceDelta} from "infinity-core/src/types/BalanceDelta.sol";
@@ -11,8 +10,8 @@ import {Currency} from "infinity-core/src/types/Currency.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
-/// @title CLSwapFeeHook
-/// @notice PancakeSwap Infinity CL hook that charges a 0.1% protocol fee on every swap.
+/// @title BinSwapFeeHook
+/// @notice PancakeSwap Infinity Bin hook that charges a 0.1% protocol fee on every swap.
 /// @dev Fee is taken from the *unspecified* token:
 ///        - exactInput  → deducted from user's output (user receives less)
 ///        - exactOutput → added to user's cost     (user pays more)
@@ -20,7 +19,7 @@ import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 ///      settlement. The hook simultaneously mints vault ERC-6909 claims to itself to
 ///      settle its own delta. Accrued claims are withdrawn by the owner at any time
 ///      via withdrawFees(), which burns the claims and calls vault.take().
-contract CLSwapFeeHook is CLBaseHook, Ownable2Step {
+contract BinSwapFeeHook is BinBaseHook, Ownable2Step {
     using PoolIdLibrary for PoolKey;
 
     // ── Constants ───────────────────────────────────────────────────────────
@@ -46,9 +45,9 @@ contract CLSwapFeeHook is CLBaseHook, Ownable2Step {
 
     // ── Constructor ──────────────────────────────────────────────────────────
 
-    constructor(ICLPoolManager _poolManager) CLBaseHook(_poolManager) Ownable(msg.sender) {}
+    constructor(IBinPoolManager _poolManager) BinBaseHook(_poolManager) Ownable(msg.sender) {}
 
-    // ── Permissions ──────────────────────────────────────────────────────────
+    // ── Permissions ───────────────────────────────────────────────────────────
 
     /// @notice Returns the hook's registration bitmap
     function getHooksRegistrationBitmap() external pure override returns (uint16) {
@@ -56,18 +55,18 @@ contract CLSwapFeeHook is CLBaseHook, Ownable2Step {
             Permissions({
                 beforeInitialize: false,
                 afterInitialize: false,
-                beforeAddLiquidity: false,
-                afterAddLiquidity: false,
-                beforeRemoveLiquidity: false,
-                afterRemoveLiquidity: false,
+                beforeMint: false,
+                afterMint: false,
+                beforeBurn: false,
+                afterBurn: false,
                 beforeSwap: false,
                 afterSwap: true,
                 beforeDonate: false,
                 afterDonate: false,
                 beforeSwapReturnDelta: false,
                 afterSwapReturnDelta: true,
-                afterAddLiquidityReturnDelta: false,
-                afterRemoveLiquidityReturnDelta: false
+                afterMintReturnDelta: false,
+                afterBurnReturnDelta: false
             })
         );
     }
@@ -75,35 +74,32 @@ contract CLSwapFeeHook is CLBaseHook, Ownable2Step {
     // ── Hook Callback ────────────────────────────────────────────────────────
 
     /// @notice Deducts 0.1% from the unspecified token of every swap.
-    /// @param params  Original swap parameters (used to determine exact/output direction).
-    /// @param delta   Actual balance changes from the swap (from the pool's perspective).
-    /// @return        Function selector, and fee amount to deduct from unspecified token.
+    /// @param key             Pool key.
+    /// @param swapForY        If true, swap X for Y (token0 for token1); else Y for X.
+    /// @param amountSpecified Negative = exactInput, positive = exactOutput.
+    /// @param delta           Actual balance changes from the swap (from the pool's perspective).
+    /// @return                Function selector, and fee amount to deduct from unspecified token.
     function afterSwap(
-        address, // sender — not used; PoolManager is trusted
+        address,
         PoolKey calldata key,
-        ICLPoolManager.SwapParams calldata params,
+        bool swapForY,
+        int128 amountSpecified,
         BalanceDelta delta,
         bytes calldata
     ) external override poolManagerOnly returns (bytes4, int128) {
         // ── 1. Identify the unspecified currency ───────────────────────────
         //
-        // "Unspecified" is the token whose amount the router did NOT fix:
-        //   zeroForOne + exactInput  → unspecified = currency1 (output)
-        //   zeroForOne + exactOutput → unspecified = currency0 (input)
-        //   oneForZero + exactInput  → unspecified = currency0 (output)
-        //   oneForZero + exactOutput → unspecified = currency1 (input)
-        //
-        // Pattern: unspecified is currency1  if (zeroForOne == exactInput)
-        bool exactInput = params.amountSpecified < 0;
-        bool unspecifiedIsCurrency1 = (params.zeroForOne == exactInput);
+        // swapForY + exactInput  → unspecified = currency1 (output)
+        // swapForY + exactOutput → unspecified = currency0 (input)
+        // swapX for Y + exactInput  → unspecified = currency1
+        // Pattern: unspecified is currency1 when (swapForY == exactInput)
+        bool exactInput = amountSpecified < 0;
+        bool unspecifiedIsCurrency1 = (swapForY == exactInput);
 
         Currency feeCurrency = unspecifiedIsCurrency1 ? key.currency1 : key.currency0;
         int128 unspecifiedDelta = unspecifiedIsCurrency1 ? delta.amount1() : delta.amount0();
 
         // ── 2. Compute absolute unspecified amount ──────────────────────────
-        //
-        // exactInput  → delta is negative (pool sends tokens out) → abs
-        // exactOutput → delta is positive (pool receives tokens)  → use directly
         uint256 unspecifiedAbs =
             unspecifiedDelta < 0 ? uint256(uint128(-unspecifiedDelta)) : uint256(uint128(unspecifiedDelta));
 
@@ -112,18 +108,11 @@ contract CLSwapFeeHook is CLBaseHook, Ownable2Step {
         if (fee == 0) return (this.afterSwap.selector, 0);
 
         // ── 4. Delta accounting ─────────────────────────────────────────────
-        //
-        // Returning +fee in afterSwap tells the PoolManager:
-        //   "the hook claims `fee` of the unspecified token."
-        // This creates a positive balance delta for the hook in the vault.
-        // We must settle it in the same lock context by minting vault ERC-6909
-        // claims. These claims represent tokens the hook can later withdraw.
         accruedFees[feeCurrency] += fee;
-        vault.mint(address(this), feeCurrency, fee); // settles hook's delta claim
+        vault.mint(address(this), feeCurrency, fee);
 
         emit FeeAccrued(key.toId(), feeCurrency, fee);
 
-        // Positive int128 → user's unspecified amount reduced by fee
         return (this.afterSwap.selector, int128(uint128(fee)));
     }
 
@@ -134,14 +123,13 @@ contract CLSwapFeeHook is CLBaseHook, Ownable2Step {
     function lockAcquired(bytes calldata data) external override vaultOnly returns (bytes memory) {
         (Currency currency, address recipient, uint256 amount) = abi.decode(data, (Currency, address, uint256));
 
-        // Burn claim tokens held by this hook, then transfer underlying to recipient
         vault.burn(address(this), currency, amount);
         vault.take(currency, recipient, amount);
 
         return abi.encode(true);
     }
 
-    // ── Admin: Fee Withdrawal ────────────────────────────────────────────────
+    // ── Owner: Fee Withdrawal ────────────────────────────────────────────────
 
     /// @notice Withdraw accumulated protocol fees to `recipient`.
     /// @param currency  Token to withdraw.
@@ -154,10 +142,8 @@ contract CLSwapFeeHook is CLBaseHook, Ownable2Step {
         if (amount == 0) amount = available;
         if (amount > available) revert InsufficientAccruedFees();
 
-        // Checks-Effects-Interactions: update state before external call
         accruedFees[currency] = available - amount;
 
-        // Acquire vault lock → lockAcquired burns claims and transfers tokens
         vault.lock(abi.encode(currency, recipient, amount));
 
         emit FeesWithdrawn(currency, recipient, amount);
