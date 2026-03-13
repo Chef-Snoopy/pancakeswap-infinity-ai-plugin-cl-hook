@@ -3,7 +3,6 @@ pragma solidity ^0.8.26;
 
 import {CLBaseHook} from "infinity-hooks/src/pool-cl/CLBaseHook.sol";
 import {ICLPoolManager} from "infinity-core/src/pool-cl/interfaces/ICLPoolManager.sol";
-import {IVault} from "infinity-core/src/interfaces/IVault.sol";
 import {PoolKey} from "infinity-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "infinity-core/src/types/PoolId.sol";
 import {BalanceDelta} from "infinity-core/src/types/BalanceDelta.sol";
